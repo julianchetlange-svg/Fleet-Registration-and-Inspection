@@ -35,6 +35,8 @@ select{font-family:'DM Sans',sans-serif}
 .tab-btn{padding:7px 22px;border-radius:6px;border:none;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.15s}
 .tab-btn.active{background:var(--accent);color:#fff}.tab-btn:not(.active){background:transparent;color:var(--muted)}.tab-btn:not(.active):hover{background:#EDF5ED}
 .search-input{padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg);font-size:11px;font-family:'JetBrains Mono',monospace;width:190px;outline:none}.search-input:focus{border-color:var(--accent)}
+.btn-download{padding:6px 13px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--green-dark);font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;transition:all 0.15s}
+.btn-download:hover{background:#EDF5ED;border-color:var(--accent)}
 .store-select{padding:8px 14px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg);font-size:12px;font-weight:600;width:320px;outline:none}.store-select:focus{border-color:var(--accent)}
 .sev-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;font-family:'JetBrains Mono',monospace;white-space:nowrap}
 .wo-badge{font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;display:inline-flex;align-items:center;gap:4px}
@@ -222,6 +224,47 @@ function legendHTML(){
   return`<div class="legend-row">${cats.map(c=>`<span class="legend-item">${dot(SEVC[c].c,8)} ${SEVC[c].l}</span>`).join('')}</div>`;
 }
 
+function csvVal(v){
+  v=(v===null||v===undefined)?'':String(v);
+  if(/[",\n\r]/.test(v)) v='"'+v.replace(/"/g,'""')+'"';
+  return v;
+}
+function statusText(cat,days){
+  if(cat==='missing') return 'No Record';
+  if(cat==='overdue') return `${Math.abs(days)}d overdue`;
+  return `${days}d remaining`;
+}
+function rowsToCSV(rows){
+  const header=['Asset','Class','Type','Store','Region','Status','Plate Type','Plate #','State','Registration Expires','Registration Status','Inspection Expires','Inspection Status','Data Gaps'];
+  const lines=[header.map(csvVal).join(',')];
+  rows.forEach(r=>{
+    const gapLabels=[];
+    if(r.gaps.plate)gapLabels.push('NO PLATE');
+    if(r.gaps.plateType)gapLabels.push('NO TYPE');
+    if(r.gaps.reg)gapLabels.push('NO REG');
+    if(r.gaps.insp)gapLabels.push('NO INSP');
+    const row=[r.asset,r.cls,r.type,r.store,r.region,r.status,r.plateType||'',r.plateNum||'',r.state||'',r.regExp||'',statusText(r.regCat,r.regDays),r.inspExp||'',statusText(r.inspCat,r.inspDays),gapLabels.join('; ')];
+    lines.push(row.map(csvVal).join(','));
+  });
+  return lines.join('\r\n');
+}
+function downloadCSV(filename,csvContent){
+  const blob=new Blob(["\ufeff"+csvContent],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=filename;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function exportAttentionCSV(){
+  const stamp=new Date().toISOString().slice(0,10);
+  downloadCSV(`assets_needing_attention_${stamp}.csv`,rowsToCSV(filterAttention()));
+}
+function exportGapsCSV(){
+  const stamp=new Date().toISOString().slice(0,10);
+  downloadCSV(`assets_missing_data_${stamp}.csv`,rowsToCSV(filterGaps()));
+}
+
 function filterAttention(){
   let d=getAttention();
   if(state.search){
@@ -316,7 +359,7 @@ function renderSummary(){
 
   // main table
   const filtered=filterAttention();
-  o+=`<div class="card"><div class="flex-between" style="margin-bottom:14px;flex-wrap:wrap;gap:8px"><span class="grotesk" style="font-size:12px;font-weight:700">Assets Needing Attention</span><input class="search-input" type="text" placeholder="Search asset # or store..." value="${esc(state.search)}" oninput="state.search=this.value;render()"></div>
+  o+=`<div class="card"><div class="flex-between" style="margin-bottom:14px;flex-wrap:wrap;gap:8px"><span class="grotesk" style="font-size:12px;font-weight:700">Assets Needing Attention</span><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input class="search-input" type="text" placeholder="Search asset # or store..." value="${esc(state.search)}" oninput="state.search=this.value;render()"><button class="btn-download" onclick="exportAttentionCSV()">⬇ Export CSV</button></div></div>
   ${filtered.length?assetTableHTML(filtered):`<div class="empty-state"><div class="big">✓</div>No assets currently need attention.</div>`}
   <div class="flex-between" style="margin-top:12px;padding:8px 0;border-top:1px solid var(--border);font-size:11px;color:var(--muted)"><span>Showing ${filtered.length} of ${att.length} flagged assets</span><span class="mono">Watch window: overdue through 90 days out</span></div>
   </div>`;
@@ -467,7 +510,7 @@ function renderGaps(){
   o+=`<div class="card"><div class="flex-between" style="margin-bottom:12px"><span class="grotesk" style="font-size:12px;font-weight:700">Gaps by Region</span>${state.gapRegionFilter?`<span class="mono" style="font-size:10px;color:var(--muted);cursor:pointer" onclick="setGapRegion('')">Clear filter (${esc(state.gapRegionFilter)}) ✕</span>`:''}</div><div class="grid">${rc}</div></div>`;
 
   const filtered=filterGaps();
-  o+=`<div class="card"><div class="flex-between" style="margin-bottom:14px;flex-wrap:wrap;gap:8px"><span class="grotesk" style="font-size:12px;font-weight:700">Assets Missing Plate, Plate Type, Registration, or Inspection Data</span><input class="search-input" type="text" placeholder="Search asset # or store..." value="${esc(state.gapSearch)}" oninput="state.gapSearch=this.value;render()"></div>
+  o+=`<div class="card"><div class="flex-between" style="margin-bottom:14px;flex-wrap:wrap;gap:8px"><span class="grotesk" style="font-size:12px;font-weight:700">Assets Missing Plate, Plate Type, Registration, or Inspection Data</span><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input class="search-input" type="text" placeholder="Search asset # or store..." value="${esc(state.gapSearch)}" oninput="state.gapSearch=this.value;render()"><button class="btn-download" onclick="exportGapsCSV()">⬇ Export CSV</button></div></div>
   ${filtered.length?assetTableHTML(filtered,{sortKey:'gapSortCol',dirKey:'gapSortDir'}):`<div class="empty-state">No matches for this search.</div>`}
   <div class="flex-between" style="margin-top:12px;padding:8px 0;border-top:1px solid var(--border);font-size:11px;color:var(--muted)"><span>Showing ${filtered.length} of ${gaps.length} flagged assets</span><span class="mono">NO PLATE · NO TYPE · NO REG · NO INSP</span></div>
   </div>`;
