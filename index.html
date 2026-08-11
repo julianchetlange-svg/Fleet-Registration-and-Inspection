@@ -72,15 +72,17 @@ const DATA=[{"storeNum": "039", "store": "039 Longview", "region": "Region 01", 
 const REGION_ORDER=["Region 01","Region 02","Region 03","Region 04","Region 05","Region 06","Region 07","Region 08","Distribution","Millwork","Headquarters"];
 const RC={"Region 01":"#1B6B2A","Region 02":"#2D8B3E","Region 03":"#D4A017","Region 04":"#3A9E50","Region 05":"#8B6914","Region 06":"#14522A","Region 07":"#6B8E23","Region 08":"#228B22",Distribution:"#5C715C",Headquarters:"#4A7C59",Millwork:"#B8860B"};
 const CC={Truck:"#1B6B2A",Trailer:"#D4A017","LD Vehicle":"#6B8E23"};
-const RANK={overdue:0,due30:1,due60:2,due90:3,missing:4,current:5};
+const RANK={overdue:0,due30:1,due60:2,due90:3,missing:4,current:5,exempt:6};
 const SEVC={
   overdue:{l:"Overdue",c:"#B91C1C",bg:"rgba(185,28,28,0.10)"},
   due30:{l:"Due ≤30d",c:"#C2410C",bg:"rgba(194,65,12,0.08)"},
   due60:{l:"Due 31-60d",c:"#B45309",bg:"rgba(180,83,9,0.08)"},
   due90:{l:"Due 61-90d",c:"#D4A017",bg:"rgba(212,160,23,0.10)"},
   current:{l:"Current",c:"#1B6B2A",bg:"rgba(27,107,42,0.08)"},
-  missing:{l:"No Record",c:"#6B7280",bg:"rgba(107,114,128,0.08)"}
+  missing:{l:"No Record",c:"#6B7280",bg:"rgba(107,114,128,0.08)"},
+  exempt:{l:"Not Required",c:"#5B7FA6",bg:"rgba(91,127,166,0.10)"}
 };
+const NO_INSPECTION_REQUIRED=new Set(["12' Slide Flatbed","16' Van Body","20' Slide Flatbed","24' Van Body","Car","Cargo Van","Millwork Trailer","Mobile Generator Trailer","Open Air Trailer","Pickup"]);
 const esc=s=>{const d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML};
 const fmtDate=d=>d?d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}):'—';
 
@@ -99,15 +101,16 @@ function enrich(arr){
     r.regDate=r.regExp?new Date(r.regExp+'T00:00:00'):null;
     r.regDays=r.regDate?Math.round((r.regDate-now)/86400000):null;
     r.regCat=categorize(r.regDays);
+    r.inspExempt=NO_INSPECTION_REQUIRED.has(r.type);
     r.inspDate=r.inspExp?new Date(r.inspExp+'T00:00:00'):null;
     r.inspDays=r.inspDate?Math.round((r.inspDate-now)/86400000):null;
-    r.inspCat=categorize(r.inspDays);
+    r.inspCat=(r.inspExempt&&!r.inspExp)?'exempt':categorize(r.inspDays);
     r.worstCat=RANK[r.regCat]<=RANK[r.inspCat]?r.regCat:r.inspCat;
     r.worstRank=RANK[r.worstCat];
     r.needsAttention=RANK[r.regCat]<=3||RANK[r.inspCat]<=3;
     const rd=r.regDays===null?Infinity:r.regDays,id=r.inspDays===null?Infinity:r.inspDays;
     r.minDays=Math.min(rd,id);
-    r.gaps={plate:!r.plateNum,plateType:!r.plateType,reg:!r.regExp,insp:!r.inspExp};
+    r.gaps={plate:!r.plateNum,plateType:!r.plateType,reg:!r.regExp,insp:(r.inspCat==='missing')};
     r.gapCount=Object.values(r.gaps).filter(Boolean).length;
     r.hasGaps=r.gapCount>0;
   });
@@ -141,7 +144,10 @@ let state={
   gapSearch:"",
   gapSortCol:"gapCount",gapSortDir:"desc",
   gapRegionFilter:"",
-  compareMode:false
+  compareMode:false,
+  emailRegion:"Region 01",
+  emailDays:30,
+  copyMsg:""
 };
 
 function dot(color,sz=7){return`<span style="width:${sz}px;height:${sz}px;border-radius:2px;background:${color};display:inline-block"></span>`}
@@ -185,13 +191,14 @@ function metricBadge(cat,days){
   const s=SEVC[cat];
   let txt;
   if(cat==='missing') txt='No record';
+  else if(cat==='exempt') txt='Not required';
   else if(cat==='overdue') txt=`${Math.abs(days)}d overdue`;
   else txt=`${days}d left`;
   return`<span class="sev-badge" style="color:${s.c};background:${s.bg};border:1px solid ${s.c}22">${esc(txt)}</span>`;
 }
 
 function stackBar(items){
-  const cats=['overdue','due30','due60','due90','missing','current'];
+  const cats=['overdue','due30','due60','due90','missing','current','exempt'];
   const n=items.length||1;
   return`<div class="stack-bar">${cats.map(c=>{const cnt=items.filter(r=>r.worstCat===c).length;const pct=(cnt/n)*100;return pct>0?`<div style="width:${pct}%;background:${SEVC[c].c}" title="${SEVC[c].l}: ${cnt}"></div>`:''}).join('')}</div>`;
 }
@@ -258,7 +265,7 @@ function assetTableHTML(data,opts){
 }
 
 function legendHTML(){
-  const cats=['overdue','due30','due60','due90','current','missing'];
+  const cats=['overdue','due30','due60','due90','current','missing','exempt'];
   return`<div class="legend-row">${cats.map(c=>`<span class="legend-item">${dot(SEVC[c].c,8)} ${SEVC[c].l}</span>`).join('')}</div>`;
 }
 
@@ -269,6 +276,7 @@ function csvVal(v){
 }
 function statusText(cat,days){
   if(cat==='missing') return 'No Record';
+  if(cat==='exempt') return 'Not Required';
   if(cat==='overdue') return `${Math.abs(days)}d overdue`;
   return `${days}d remaining`;
 }
@@ -356,6 +364,7 @@ function renderSummary(){
     const due60=items.filter(r=>r.worstCat==='due60').length;
     const due90=items.filter(r=>r.worstCat==='due90').length;
     const missing=items.filter(r=>r.worstCat==='missing').length;
+    const exempt=items.filter(r=>r.worstCat==='exempt').length;
     return`<div style="background:var(--bg);border-radius:8px;padding:14px 16px;border:1px solid var(--border);border-left:3px solid ${accent}">
       <div class="flex-between" style="margin-bottom:6px"><span style="font-size:13px;font-weight:700;color:${accent}">${esc(name)}</span><span class="mono" style="font-size:20px;font-weight:800">${overdue+due30+due60+due90}</span></div>
       <div class="mono" style="font-size:10px;color:var(--muted);margin-bottom:8px">assets due or overdue within 90 days</div>
@@ -366,6 +375,7 @@ function renderSummary(){
         <span style="color:${SEVC.due60.c}">${due60} 31-60d</span>
         <span style="color:${SEVC.due90.c}">${due90} 61-90d</span>
         <span style="color:${SEVC.missing.c}">${missing} no record</span>
+        ${exempt>0?`<span style="color:${SEVC.exempt.c}">${exempt} not required</span>`:''}
       </div>
     </div>`;
   }
@@ -437,7 +447,7 @@ function renderRegions(){
         if(sOpen){storeContent+=`<div class="store-assets">${assetTableHTML(s.items,{showStore:false})}</div>`}
       });
     }
-    const regionStats=`<span class="mono" style="font-size:11px;display:flex;gap:14px;align-items:center"><span style="font-weight:800;font-size:16px">${r.count}</span>${r.overdue>0?`<span style="color:#B91C1C;font-weight:600">${r.overdue} overdue</span>`:''}${r.due30>0?`<span style="color:#C2410C;font-weight:600">${r.due30} ≤30d</span>`:''}${r.missing>0?`<span style="color:#6B7280">${r.missing} no record</span>`:''}<span style="color:var(--muted)">${stores.length} store${stores.length>1?'s':''}</span></span>`;
+    const regionStats=`<span class="mono" style="font-size:11px;display:flex;gap:14px;align-items:center"><span style="font-weight:800;font-size:16px">${r.count}</span>${r.overdue>0?`<span style="color:#B91C1C;font-weight:600">${r.overdue} overdue</span>`:''}${r.due30>0?`<span style="color:#C2410C;font-weight:600">${r.due30} ≤30d</span>`:''}${r.missing>0?`<span style="color:#6B7280">${r.missing} no record</span>`:''}<span style="color:var(--muted)">${stores.length} store${stores.length>1?'s':''}</span><button class="btn-download" style="padding:4px 10px;font-size:10px" onclick="event.stopPropagation();goToEmailForRegion('${r.name.replace(/'/g,"\\'")}')">✉ Draft Email</button></span>`;
     o+=`<div class="accordion"><div class="accordion-head" onclick="toggleRegion('${r.name}')"><div style="display:flex;align-items:center;gap:10px"><span class="accordion-arrow ${isOpen?'open':''}">▾</span>${dot(RC[r.name]||'#666',10)}<span class="grotesk" style="font-size:14px;font-weight:700;color:${RC[r.name]||'var(--fg)'}">${esc(r.name)}</span></div>${regionStats}</div>${isOpen?`<div class="accordion-body">${storeContent}</div>`:''}</div>`;
   });
   return o;
@@ -558,6 +568,148 @@ function renderGaps(){
   return o;
 }
 
+function assetLabel(r){return `${r.store} — Asset ${r.asset} (${r.cls}, ${r.type})`}
+
+function generateEmail(regionName,xDays){
+  const items=DATA.filter(r=>r.region===regionName);
+  const overdue=items.filter(r=>r.regCat==='overdue'||r.inspCat==='overdue'||r.regCat==='missing');
+  const regSoon=items.filter(r=>r.regCat!=='overdue'&&r.regCat!=='missing'&&r.regDays!==null&&r.regDays>=0&&r.regDays<=xDays);
+  const inspNeeded=items.filter(r=>!r.inspExempt&&r.inspCat!=='overdue'&&(r.inspCat==='missing'||(r.inspDays!==null&&r.inspDays>=0&&r.inspDays<=xDays)));
+
+  overdue.sort((a,b)=>{
+    const av=Math.min(a.regCat==='overdue'?a.regDays:Infinity,a.inspCat==='overdue'?a.inspDays:Infinity);
+    const bv=Math.min(b.regCat==='overdue'?b.regDays:Infinity,b.inspCat==='overdue'?b.inspDays:Infinity);
+    return av-bv;
+  });
+  regSoon.sort((a,b)=>a.regDays-b.regDays);
+  inspNeeded.sort((a,b)=>{
+    const av=a.inspCat==='missing'?-1:a.inspDays,bv=b.inspCat==='missing'?-1:b.inspDays;
+    return av-bv;
+  });
+
+  const dateStr=fmtDate(REPORT_DATE);
+  const lines=[];
+  lines.push(`Hi [Regional Manager],`);
+  lines.push(``);
+  lines.push(`Below is the current registration and inspection status for fleet assets in ${regionName} as of ${dateStr}. Please review and take action to renew registrations and schedule inspections as needed.`);
+  lines.push(``);
+
+  lines.push(`OVERDUE — IMMEDIATE ACTION NEEDED (${overdue.length})`);
+  lines.push(`-`.repeat(45));
+  if(overdue.length){
+    overdue.forEach(r=>{
+      const parts=[];
+      if(r.regCat==='overdue') parts.push(`Registration expired ${Math.abs(r.regDays)}d ago (was due ${fmtDate(r.regDate)})`);
+      if(r.regCat==='missing') parts.push(`No registration expiration on file — please verify`);
+      if(r.inspCat==='overdue') parts.push(`Inspection expired ${Math.abs(r.inspDays)}d ago (was due ${fmtDate(r.inspDate)})`);
+      lines.push(`- ${assetLabel(r)} — ${parts.join(' | ')}`);
+    });
+  } else {
+    lines.push(`No assets are currently overdue in this region. Nice work!`);
+  }
+  lines.push(``);
+
+  lines.push(`REGISTRATIONS EXPIRING IN THE NEXT ${xDays} DAYS (${regSoon.length})`);
+  lines.push(`-`.repeat(45));
+  if(regSoon.length){
+    regSoon.forEach(r=>{
+      lines.push(`- ${assetLabel(r)} — Registration expires ${fmtDate(r.regDate)} (${r.regDays}d)`);
+    });
+  } else {
+    lines.push(`No registrations are expiring in the next ${xDays} days for this region.`);
+  }
+  lines.push(``);
+
+  lines.push(`ASSETS NEEDING INSPECTION TO RENEW REGISTRATION (${inspNeeded.length})`);
+  lines.push(`-`.repeat(45));
+  if(inspNeeded.length){
+    inspNeeded.forEach(r=>{
+      if(r.inspCat==='missing') lines.push(`- ${assetLabel(r)} — No inspection on file — please schedule`);
+      else lines.push(`- ${assetLabel(r)} — Inspection due ${fmtDate(r.inspDate)} (${r.inspDays}d)`);
+    });
+  } else {
+    lines.push(`No assets currently need inspection in this region.`);
+  }
+  lines.push(``);
+  lines.push(`If you have questions about any of the assets listed above, please reach out to Fleet Compliance.`);
+  lines.push(``);
+  lines.push(`Thank you,`);
+  lines.push(`Fleet Compliance Team`);
+
+  const subject=`Fleet Compliance Action Needed — ${regionName} — ${dateStr}`;
+  const body=lines.join('\n');
+  return{subject,body,overdue,regSoon,inspNeeded};
+}
+
+async function copyToClipboard(text,label){
+  try{
+    await navigator.clipboard.writeText(text);
+  }catch(e){
+    const ta=document.createElement('textarea');
+    ta.value=text;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');}catch(err){}
+    document.body.removeChild(ta);
+  }
+  state.copyMsg=`${label} copied to clipboard`;
+  render();
+  setTimeout(()=>{state.copyMsg="";render();},2200);
+}
+
+function copyEmailSubject(){
+  const {subject}=generateEmail(state.emailRegion,state.emailDays);
+  copyToClipboard(subject,'Subject');
+}
+function copyEmailBody(){
+  const {body}=generateEmail(state.emailRegion,state.emailDays);
+  copyToClipboard(body,'Email body');
+}
+function copyEmailAll(){
+  const {subject,body}=generateEmail(state.emailRegion,state.emailDays);
+  copyToClipboard(`Subject: ${subject}\n\n${body}`,'Subject + body');
+}
+function setEmailRegion(name){state.emailRegion=name;render()}
+function setEmailDays(v){state.emailDays=Math.max(1,parseInt(v)||30);render()}
+function goToEmailForRegion(name){state.tab='emails';state.emailRegion=name;render()}
+
+function renderEmails(){
+  const regions=REGION_ORDER.filter(r=>DATA.some(d=>d.region===r));
+  const {subject,body,overdue,regSoon,inspNeeded}=generateEmail(state.emailRegion,state.emailDays);
+  const regionCount=DATA.filter(r=>r.region===state.emailRegion).length;
+
+  let o=`<div class="card">
+    <div class="grotesk" style="font-size:13px;font-weight:700;margin-bottom:12px">Generate Regional Manager Email</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:4px">
+      <div>
+        <div class="mono" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">Region</div>
+        <select class="store-select" style="width:220px" onchange="setEmailRegion(this.value)">
+          ${regions.map(r=>`<option value="${esc(r)}" ${state.emailRegion===r?'selected':''}>${esc(r)}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <div class="mono" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">Registrations/inspections due within (days)</div>
+        <input type="number" min="1" max="365" value="${state.emailDays}" class="search-input" style="width:90px" onchange="setEmailDays(this.value)">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-download" onclick="copyEmailAll()">⬇ Copy Subject + Body</button>
+        <button class="btn-download" onclick="copyEmailSubject()">Copy Subject</button>
+        <button class="btn-download" onclick="copyEmailBody()">Copy Body</button>
+      </div>
+      ${state.copyMsg?`<span class="mono" style="font-size:11px;color:var(--accent);font-weight:700">✓ ${esc(state.copyMsg)}</span>`:''}
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">${regionCount} total assets in ${esc(state.emailRegion)} · ${overdue.length} overdue · ${regSoon.length} registrations due ≤${state.emailDays}d · ${inspNeeded.length} need inspection</div>
+  </div>`;
+
+  o+=`<div class="card">
+    <div class="mono" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Subject</div>
+    <div class="mono" style="font-size:13px;font-weight:700;margin-bottom:16px;padding:10px 12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">${esc(subject)}</div>
+    <div class="mono" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Body — ready to paste into Outlook</div>
+    <pre style="white-space:pre-wrap;word-break:break-word;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:16px;margin:0;max-height:520px;overflow-y:auto">${esc(body)}</pre>
+  </div>`;
+
+  return o;
+}
+
 function switchTab(tab){
   state.tab=tab;state.search="";state.gapSearch="";state.gapRegionFilter="";
   if(tab!=="regions"){state.openRegions={};state.openStores={}}
@@ -566,13 +718,14 @@ function switchTab(tab){
 
 function render(){
   const now=REPORT_DATE.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
-  const tabs=[{id:"summary",l:"Summary"},{id:"regions",l:"Region / Store"},{id:"lookup",l:"Store Lookup"},{id:"gaps",l:"Missing Info"}];
+  const tabs=[{id:"summary",l:"Summary"},{id:"regions",l:"Region / Store"},{id:"lookup",l:"Store Lookup"},{id:"gaps",l:"Missing Info"},{id:"emails",l:"Email Drafts"}];
   let tb=tabs.map(t=>`<button class="tab-btn ${state.tab===t.id?'active':''}" onclick="switchTab('${t.id}')">${t.l}</button>`).join('');
   let content;
   if(state.tab==="summary")content=renderSummary();
   else if(state.tab==="regions")content=renderRegions();
   else if(state.tab==="lookup")content=renderStoreLookup();
-  else content=renderGaps();
+  else if(state.tab==="gaps")content=renderGaps();
+  else content=renderEmails();
   const attCount=getAttention().length;
   document.getElementById('app').innerHTML=`<div class="header-bar"><div><div style="display:flex;align-items:center;gap:10px;margin-bottom:4px"><span class="live-dot"></span><span class="mono" style="font-size:11px;color:var(--yellow);font-weight:700;letter-spacing:1.5px;text-transform:uppercase">FLEET COMPLIANCE — LIVE</span></div><h1>Registration &amp; Inspection Compliance</h1><p class="sub">McCoy's Building Supply · Fleet Compliance · ${attCount} of ${TOTAL} assets need attention (${(attCount/TOTAL*100).toFixed(1)}%)</p></div><div class="date"><div>Report generated</div><strong>${now}</strong></div></div><div class="accent-stripe"></div><div class="tab-bar">${tb}</div>${content}`;
 }
