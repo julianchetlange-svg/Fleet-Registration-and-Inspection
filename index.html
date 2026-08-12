@@ -84,6 +84,8 @@ const SEVC={
 };
 const NO_INSPECTION_REQUIRED=new Set(["12' Slide Flatbed","16' Van Body","20' Slide Flatbed","24' Van Body","Car","Cargo Van","Millwork Trailer","Mobile Generator Trailer","Open Air Trailer","Pickup"]);
 const YARD_EXEMPT_ASSETS=new Set(["754058","752016","755047"]);
+const INSPECTION_ONLY_EXEMPT_ASSETS=new Set(["20046"]);
+const INSPECTION_NOT_TIED_TO_REG=new Set(["Flatbed Trailer","Pup Trailer","Van Trailer"]);
 const esc=s=>{const d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML};
 const fmtDate=d=>d?d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}):'—';
 
@@ -100,13 +102,14 @@ function enrich(arr){
   const now=new Date();now.setHours(0,0,0,0);
   arr.forEach(r=>{
     r.yardExempt=YARD_EXEMPT_ASSETS.has(r.asset);
+    r.assetInspExempt=INSPECTION_ONLY_EXEMPT_ASSETS.has(r.asset);
     r.regDate=r.regExp?new Date(r.regExp+'T00:00:00'):null;
     r.regDays=r.regDate?Math.round((r.regDate-now)/86400000):null;
     r.regCat=r.yardExempt?'exempt':categorize(r.regDays);
-    r.inspExempt=NO_INSPECTION_REQUIRED.has(r.type)||r.yardExempt;
+    r.inspExempt=NO_INSPECTION_REQUIRED.has(r.type)||r.yardExempt||r.assetInspExempt;
     r.inspDate=r.inspExp?new Date(r.inspExp+'T00:00:00'):null;
     r.inspDays=r.inspDate?Math.round((r.inspDate-now)/86400000):null;
-    r.inspCat=r.yardExempt?'exempt':((r.inspExempt&&!r.inspExp)?'exempt':categorize(r.inspDays));
+    r.inspCat=(r.yardExempt||r.assetInspExempt)?'exempt':((r.inspExempt&&!r.inspExp)?'exempt':categorize(r.inspDays));
     r.worstCat=RANK[r.regCat]<=RANK[r.inspCat]?r.regCat:r.inspCat;
     r.worstRank=RANK[r.worstCat];
     r.needsAttention=RANK[r.regCat]<=3||RANK[r.inspCat]<=3;
@@ -579,7 +582,9 @@ function generateEmail(regionName,xDays){
   const items=DATA.filter(r=>r.region===regionName);
   const overdue=items.filter(r=>r.regCat==='overdue'||r.inspCat==='overdue'||r.regCat==='missing');
   const regSoon=items.filter(r=>r.regCat!=='overdue'&&r.regCat!=='missing'&&r.regDays!==null&&r.regDays>=0&&r.regDays<=xDays);
-  const inspNeeded=items.filter(r=>!r.inspExempt&&r.inspCat!=='overdue'&&(r.inspCat==='missing'||(r.inspDays!==null&&r.inspDays>=0&&r.inspDays<=xDays)));
+  const inspNeededAll=items.filter(r=>!r.inspExempt&&r.inspCat!=='overdue'&&(r.inspCat==='missing'||(r.inspDays!==null&&r.inspDays>=0&&r.inspDays<=xDays)));
+  const inspNeeded=inspNeededAll.filter(r=>!INSPECTION_NOT_TIED_TO_REG.has(r.type));
+  const inspNeededTrailers=inspNeededAll.filter(r=>INSPECTION_NOT_TIED_TO_REG.has(r.type));
 
   overdue.sort((a,b)=>{
     const av=Math.min(a.regCat==='overdue'?a.regDays:Infinity,a.inspCat==='overdue'?a.inspDays:Infinity);
@@ -587,10 +592,12 @@ function generateEmail(regionName,xDays){
     return av-bv;
   });
   regSoon.sort((a,b)=>a.regDays-b.regDays);
-  inspNeeded.sort((a,b)=>{
+  const sortInsp=(a,b)=>{
     const av=a.inspCat==='missing'?-1:a.inspDays,bv=b.inspCat==='missing'?-1:b.inspDays;
     return av-bv;
-  });
+  };
+  inspNeeded.sort(sortInsp);
+  inspNeededTrailers.sort(sortInsp);
 
   const dateStr=fmtDate(REPORT_DATE);
   const lines=[];
@@ -636,6 +643,18 @@ function generateEmail(regionName,xDays){
     lines.push(`No assets currently need inspection in this region.`);
   }
   lines.push(``);
+
+  lines.push(`TRAILERS NEEDING INSPECTION — DOES NOT AFFECT REGISTRATION RENEWAL (${inspNeededTrailers.length})`);
+  lines.push(`-`.repeat(45));
+  if(inspNeededTrailers.length){
+    inspNeededTrailers.forEach(r=>{
+      if(r.inspCat==='missing') lines.push(`- ${assetLabel(r)} — No inspection on file — please schedule`);
+      else lines.push(`- ${assetLabel(r)} — Inspection due ${fmtDate(r.inspDate)} (${r.inspDays}d)`);
+    });
+  } else {
+    lines.push(`No trailers currently need inspection in this region.`);
+  }
+  lines.push(``);
   lines.push(`If you have questions about any of the assets listed above, please reach out to Fleet Department.`);
   lines.push(``);
   lines.push(`Thank you,`);
@@ -643,7 +662,7 @@ function generateEmail(regionName,xDays){
 
   const subject=`Fleet Department Action Needed — ${regionName} — ${dateStr}`;
   const body=lines.join('\n');
-  return{subject,body,overdue,regSoon,inspNeeded};
+  return{subject,body,overdue,regSoon,inspNeeded,inspNeededTrailers};
 }
 
 async function copyToClipboard(text,label){
@@ -679,7 +698,7 @@ function goToEmailForRegion(name){state.tab='emails';state.emailRegion=name;rend
 
 function renderEmails(){
   const regions=REGION_ORDER.filter(r=>DATA.some(d=>d.region===r));
-  const {subject,body,overdue,regSoon,inspNeeded}=generateEmail(state.emailRegion,state.emailDays);
+  const {subject,body,overdue,regSoon,inspNeeded,inspNeededTrailers}=generateEmail(state.emailRegion,state.emailDays);
   const regionCount=DATA.filter(r=>r.region===state.emailRegion).length;
 
   let o=`<div class="card">
@@ -702,7 +721,7 @@ function renderEmails(){
       </div>
       ${state.copyMsg?`<span class="mono" style="font-size:11px;color:var(--accent);font-weight:700">✓ ${esc(state.copyMsg)}</span>`:''}
     </div>
-    <div style="font-size:11px;color:var(--muted);margin-top:6px">${regionCount} total assets in ${esc(state.emailRegion)} · ${overdue.length} overdue · ${regSoon.length} registrations due ≤${state.emailDays}d · ${inspNeeded.length} need inspection</div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">${regionCount} total assets in ${esc(state.emailRegion)} · ${overdue.length} overdue · ${regSoon.length} registrations due ≤${state.emailDays}d · ${inspNeeded.length} need inspection (blocks renewal) · ${inspNeededTrailers.length} trailers need inspection</div>
   </div>`;
 
   o+=`<div class="card">
